@@ -11,6 +11,7 @@ import com.google.android.gms.wallet.AutoResolveHelper
 import com.google.android.gms.wallet.PaymentData
 import com.google.android.gms.wallet.PaymentDataRequest
 import com.google.android.gms.wallet.PaymentsClient
+import org.json.JSONObject
 
 class MainActivity : AppCompatActivity() {
     private lateinit var googlePaymentsClient: PaymentsClient
@@ -24,51 +25,53 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
         googlePaymentsClient = GooglePaymentUtils.createGoogleApiClientForPay(applicationContext)
+        //initialize Google Pay button
         btnPaymentByGoogle = findViewById(R.id.btnPaymentByGoogle)
-        setPayButtonClickListener()
-        GooglePaymentUtils.checkIsReadyGooglePay(googlePaymentsClient, this::setPayButtonVisibility)
+        //add listener to Google Pay button
+        btnPaymentByGoogle.setOnClickListener { requestPayment() }
+        //check wethe we can display Google Pay button
+        GooglePaymentUtils.checkIsReadyGooglePay(googlePaymentsClient){ btnPaymentByGoogle.visibility = if (it) View.VISIBLE else View.GONE}
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-
         when (requestCode) {
             REQUEST_CODE -> {
                 when (resultCode) {
                     Activity.RESULT_OK -> {
                         if (data == null)
                             return
-
                         val paymentData: PaymentData? = PaymentData.getFromIntent(data)
                     }
                     Activity.RESULT_CANCELED -> {
-                        // Пользователь нажал назад,
-                        // когда был показан диалог google pay
-                        // если показывали загрузку или что-то еще,
-                        // можете отменить здесь
+                        //user canceled the payment
                     }
                     AutoResolveHelper.RESULT_ERROR -> {
                         if (data == null)
                             return
-
-                        // Гугл сам покажет диалог ошибки.
-                        // Можете вывести логи и спрятать загрузку,
-                        // если показывали
+                        //Google will show error dialog, you no need to show something
                         val status = AutoResolveHelper.getStatusFromIntent(data)
                         Log.e("GOOGLE PAY", "Load payment data has failed with status: $status")
                     }
                     else -> { }
                 }
+                    btnPaymentByGoogle.isClickable = true
             }
             else -> { }
         }
     }
 
-    private fun setPayButtonClickListener(){
-        btnPaymentByGoogle.setOnClickListener {
-            val price: String = computeItemPrice()
-            val request: PaymentDataRequest = GooglePaymentUtils.createPaymentDataRequest(price)
-            AutoResolveHelper.resolveTask<PaymentData>(googlePaymentsClient.loadPaymentData(request), this, REQUEST_CODE)
+    private fun requestPayment() {
+        val priceCents: String = computeItemPriceInCents()
+        val paymentDataRequestJson: JSONObject? = GooglePaymentUtils.getPaymentDataRequest(priceCents)
+        if (paymentDataRequestJson == null) {
+            Log.e("RequestPayment", "Can't fetch payment data request")
+            return
+        }
+        val request: PaymentDataRequest? = PaymentDataRequest.fromJson(paymentDataRequestJson.toString())
+        if (request != null) {
+            AutoResolveHelper.resolveTask(
+                googlePaymentsClient.loadPaymentData(request), this, REQUEST_CODE)
         }
     }
 
@@ -76,5 +79,5 @@ class MainActivity : AppCompatActivity() {
         btnPaymentByGoogle.visibility = if (visible) View.VISIBLE else View.GONE
     }
 
-    private fun computeItemPrice():String = "10.00"
+    private fun computeItemPriceInCents():String = "1000"
 }

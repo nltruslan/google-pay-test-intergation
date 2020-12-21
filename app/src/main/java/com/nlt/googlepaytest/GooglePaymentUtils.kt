@@ -1,19 +1,16 @@
+import android.app.Activity
 import android.content.Context
+import android.util.Log
 import com.google.android.gms.common.api.ApiException
 import com.google.android.gms.wallet.*
+import org.json.JSONArray
+import org.json.JSONException
+import org.json.JSONObject
 
 object GooglePaymentUtils {
 
-    private val SUPPORTED_NETWORKS = arrayListOf(
-        WalletConstants.CARD_NETWORK_OTHER,
-        WalletConstants.CARD_NETWORK_VISA,
-        WalletConstants.CARD_NETWORK_MASTERCARD
-    )
-
-    private val SUPPORTED_METHODS = arrayListOf(
-        WalletConstants.PAYMENT_METHOD_TOKENIZED_CARD,
-        WalletConstants.PAYMENT_METHOD_CARD
-    )
+    const val COUNTRY_CODE = "UA"
+    const val CURRENCY_CODE = "USD"
 
     fun createGoogleApiClientForPay(context: Context): PaymentsClient =
         Wallet.getPaymentsClient(
@@ -24,67 +21,114 @@ object GooglePaymentUtils {
                 .build()
         )
 
+    private fun baseRequest() = JSONObject().apply {
+        put("apiVersion", 2)
+        put("apiVersionMinor", 0)
+    }
+
+    private fun gatewayTokenizationSpecification(): JSONObject {
+        return JSONObject().apply {
+            put("type", "PAYMENT_GATEWAY")
+            put("parameters", JSONObject(mapOf(
+                "gateway" to "example",
+                "gatewayMerchantId" to "exampleGatewayMerchantId")))
+        }
+    }
+
+    private val allowedCardNetworks = JSONArray(listOf(
+        "AMEX",
+        "DISCOVER",
+        "INTERAC",
+        "JCB",
+        "MASTERCARD",
+        "VISA"))
+
+    private val allowedCardAuthMethods = JSONArray(listOf(
+        "PAN_ONLY",
+        "CRYPTOGRAM_3DS"))
+
+    private fun baseCardPaymentMethod(): JSONObject {
+        return JSONObject().apply {
+
+            val parameters = JSONObject().apply {
+                put("allowedAuthMethods", allowedCardAuthMethods)
+                put("allowedCardNetworks", allowedCardNetworks)
+                put("billingAddressRequired", false)
+//                put("billingAddressParameters", JSONObject().apply {
+//                    put("format", "FULL")
+//                })
+            }
+
+            put("type", "CARD")
+            put("parameters", parameters)
+        }
+    }
+
+    private fun cardPaymentMethod(): JSONObject {
+        val cardPaymentMethod = baseCardPaymentMethod()
+        cardPaymentMethod.put("tokenizationSpecification", gatewayTokenizationSpecification())
+        return cardPaymentMethod
+    }
+
+    private fun getTransactionInfo(price: String): JSONObject {
+        return JSONObject().apply {
+            put("totalPrice", price)
+            put("totalPriceStatus", "FINAL")
+            put("countryCode", COUNTRY_CODE)
+            put("currencyCode", CURRENCY_CODE)
+        }
+    }
+
+    private fun merchantInfo(): JSONObject =
+        JSONObject().put("merchantName", "Example Merchant")
+
+
+    fun getPaymentDataRequest(price: String): JSONObject? {
+        try {
+            return baseRequest().apply {
+                put("allowedPaymentMethods", JSONArray().put(cardPaymentMethod()))
+                put("transactionInfo", getTransactionInfo(price))
+                put("merchantInfo", merchantInfo())
+                // An optional shipping address requirement is a top-level property of the
+                // PaymentDataRequest JSON object.
+                val shippingAddressParameters = JSONObject().apply {
+                    put("phoneNumberRequired", false)
+                    put("allowedCountryCodes", JSONArray(listOf("US", "UA")))
+                }
+                put("shippingAddressParameters", shippingAddressParameters)
+                put("shippingAddressRequired", true)
+            }
+        } catch (e: JSONException) {
+            return null
+        }
+    }
+
+    private fun isReadyToPayRequest(): JSONObject? {
+        return try {
+            baseRequest().apply {
+                put("allowedPaymentMethods", JSONArray().put(baseCardPaymentMethod()))
+            }
+        } catch (e: JSONException) {
+            null
+        }
+    }
+
     fun checkIsReadyGooglePay(
         paymentsClient: PaymentsClient,
         callback: (res: Boolean) -> Unit
     ) {
-        val isReadyRequest = IsReadyToPayRequest.newBuilder()
-            .addAllowedPaymentMethod(WalletConstants.PAYMENT_METHOD_CARD)
-            .addAllowedPaymentMethod(WalletConstants.PAYMENT_METHOD_TOKENIZED_CARD)
-            .build()
-        val task = paymentsClient.isReadyToPay(isReadyRequest)
-        task.addOnCompleteListener {
+        val isReadyToPayJson = isReadyToPayRequest() ?: return
+        val request = IsReadyToPayRequest.fromJson(isReadyToPayJson.toString()) ?: return
+        // The call to isReadyToPay is asynchronous and returns a Task. We need to provide an
+        // OnCompleteListener to be triggered when the result of the call is known.
+        val task = paymentsClient.isReadyToPay(request)
+        task.addOnCompleteListener { completedTask ->
             try {
-                if (it.getResult(ApiException::class.java) == true)
-                // можем показать кнопку оплаты, все хорошо
-                    callback.invoke(true)
-                else
-                // должны спрятать кнопку оплаты
-                    callback.invoke(false)
-            } catch (e: ApiException) {
-                e.printStackTrace()
-                callback.invoke(false)
+                completedTask.getResult(ApiException::class.java)?.let(callback)
+            } catch (exception: ApiException) {
+                // Process error
+                Log.w("isReadyToPay failed", exception)
             }
         }
-    }
-
-    fun createPaymentDataRequest(price: String): PaymentDataRequest {
-        val transaction = createTransaction(price)
-        val request = generatePaymentRequest(transaction)
-        return request
-    }
-
-    fun createTransaction(price: String): TransactionInfo =
-        TransactionInfo.newBuilder()
-            .setTotalPriceStatus(WalletConstants.TOTAL_PRICE_STATUS_FINAL)
-            .setTotalPrice(price)
-            .setCurrencyCode(/*CURRENCY_CODE*/ "USD")
-            .build()
-
-    private fun generatePaymentRequest(transactionInfo: TransactionInfo): PaymentDataRequest {
-        val tokenParams = PaymentMethodTokenizationParameters
-            .newBuilder()
-            .setPaymentMethodTokenizationType(WalletConstants.PAYMENT_METHOD_TOKENIZATION_TYPE_DIRECT)
-            .addParameter("gateway", "aciworldwide")
-            .addParameter("gatewayMerchantId", "Shop name")
-            .build()
-
-        return PaymentDataRequest.newBuilder()
-            .setPhoneNumberRequired(false)
-            .setEmailRequired(true)
-            .setShippingAddressRequired(true)
-            .setTransactionInfo(transactionInfo)
-            .addAllowedPaymentMethods(SUPPORTED_METHODS)
-            .setCardRequirements(
-                CardRequirements.newBuilder()
-                    .addAllowedCardNetworks(SUPPORTED_NETWORKS)
-                    .setAllowPrepaidCards(true)
-                    .setBillingAddressRequired(true)
-                    .setBillingAddressFormat(WalletConstants.BILLING_ADDRESS_FORMAT_FULL)
-                    .build()
-            )
-            .setPaymentMethodTokenizationParameters(tokenParams)
-            .setUiRequired(true)
-            .build()
     }
 }
